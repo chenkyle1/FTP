@@ -1,0 +1,168 @@
+#!/usr/bin/env -S python3 -u
+
+import re
+import os
+import socket
+import sys 
+import argparse
+from urllib.parse import urlparse
+
+class FTP:
+
+    # Initializes all the variables needed for FTP class
+    def __init__(self, operation, arg1, arg2):
+        self.no_chanel = ["mkdir", "rmdir", "ls"]
+        self.op = operation
+        if "ftp://" in arg1:
+            self.parsed_url_1 = urlparse(arg1)
+            self.arg2 = arg2
+        else:
+            self.parsed_url_1 = urlparse(arg2)
+            self.arg2 = arg1
+        self.hostname = self.parsed_url_1.hostname
+        self.port = self.parsed_url_1.port or 21
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.connect((self.hostname, self.port))
+
+        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+    
+    # sends the msg to server
+    def send_msg(self, msg):
+        self.sock.send(msg.encode())
+
+    # opens the second data channel
+    def open_channel(self, msg):
+        number_list = re.search(r'\(([^)]+)', msg).group(1).split(",")
+        ip = number_list[0] + "." + number_list[1] + "." + number_list[2] + "." + number_list[3]
+        port = (int(number_list[4]) << 8) + int(number_list[5])
+        
+        self.s.connect((ip, port))
+    
+    #makes a local copy
+    def store_local_cp(self, path, response):
+        if type(response) == "bytes":
+            with open(path, 'w') as file:
+                file.write(response)
+        else:
+            with open(path, 'wb') as file:
+                file.write(response)
+
+    # Gets the client or the server ready for data
+    def complete_transfer(self):
+        if "ftp://" in arg1:
+            message = "RETR " + self.parsed_url_1.path + "\r\n"
+            self.send_msg(message)
+        else:
+            message = "STOR " + self.parsed_url_1.path + "\r\n"
+            self.send_msg(message)
+    
+    # uploads the local file to the server
+    def send_data(self):
+        content = ""
+        try :
+            with open(arg1, "rb") as file:
+                content = file.read()
+                self.s.send(content)
+        except Exception as e:
+            print(e)
+        self.s.close()
+        
+
+
+    # takes in msg received from server to be probably delt with
+    def handle_msg(self, msg):
+        if "Welcome to Khoury CS3700 FTP Server" in msg:
+            message = "USER " + self.parsed_url_1.username + "\r\n"
+            self.send_msg(message)
+        elif "Please specify the password" in msg:
+            message = "PASS " + self.parsed_url_1.password + "\r\n"
+            self.send_msg(message)
+        elif "Login successful." in msg:
+            self.handle_op()
+        elif "Mode set to S." in msg:
+            message = "MODE S\r\n"
+            self.send_msg(message)
+        elif "Structure set to F." in msg:
+            message = "STRU F\r\n"
+            self.send_msg(message)
+        elif "Entering Passive Mode" in msg and self.op == "ls":
+            self.open_channel(msg)
+            message = "LIST " + str(self.parsed_url_1.path) + "\r\n"
+            self.send_msg(message)
+        elif "Entering Passive Mode" in msg and self.op == "cp":
+            self.open_channel(msg)
+            self.complete_transfer()
+        elif "Entering Passive Mode" in msg and self.op == "mv":
+            self.open_channel(msg)
+            self.complete_transfer()
+        elif "Opening BINARY mode data connection for" in msg:
+            response = self.s.recv(8192)
+            self.store_local_cp(arg2, response)
+        elif "Ok to send data" in msg:
+            self.send_data()
+        elif "Here comes the directory listing." in msg:
+            response = self.s.recv(1024)
+            print(response.decode())
+        elif "Transfer complete." in msg and self.op == "mv":
+            if "ftp://" in arg1:
+                message = "DELE " + self.parsed_url_1.path + "\r\n"
+                self.send_msg(message)
+            else:
+                if os.path.exists(arg1):
+                    os.remove(arg1)
+                    message = "QUIT\r\n"
+                    self.send_msg(message)
+                else:
+                    print("The file does not exist")
+        elif msg.startswith("4") or msg.startswith("5") or msg.startswith("6") or "created" in msg or "Remove directory operation successful." in msg or "Directory send OK." in msg or "Delete operation successfu" in msg or "Transfer complete." in msg:
+            message = "QUIT\r\n"
+            self.send_msg(message)
+        elif "Goodbye" in msg:
+            sys.exit()
+
+    # sends command to server.
+    def handle_op(self):
+        if self.op not in self.no_chanel:
+            message = "TYPE I\r\n"
+            self.send_msg(message)
+        if self.op == "mkdir":
+            message = "MKD " + self.parsed_url_1.path + "\r\n"
+            self.send_msg(message)
+        elif self.op == "rmdir":
+            message = "RMD " + self.parsed_url_1.path + "\r\n"
+            self.send_msg(message)
+        elif self.op == "ls" or self.op == "cp" or self.op == "mv":
+            message = "PASV\r\n"
+            self.send_msg(message)
+        elif self.op == "rm":
+            message = "DELE " + self.parsed_url_1.path + "\r\n"
+            self.send_msg(message)
+        
+
+    # receives the message
+    def run(self):
+        while True:
+            response = self.sock.recv(8192)
+            msg = response.decode()
+            print(msg)
+            self.handle_msg(msg)
+
+                
+
+
+
+if __name__ == "__main__":
+    # allows args to be parsed from command
+    parser = argparse.ArgumentParser(description="FTP client")
+    parser.add_argument("operation", type=str, help="operation")
+    parser.add_argument("arg1", type=str, help="argument 1")
+    parser.add_argument("arg2", type=str, nargs='?', default="", help="argument 2")
+    args = parser.parse_args()
+    operation = args.operation
+    arg1 = args.arg1
+    arg2 = args.arg2 or ""
+    # initialize class FTP
+    ftp = FTP(operation, arg1, arg2)
+    ftp.run()
